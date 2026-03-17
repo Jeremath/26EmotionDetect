@@ -15,12 +15,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import librosa
+import numpy as np
 import torch
 from transformers import (
     AutoModelForSequenceClassification,
@@ -28,7 +30,6 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     Qwen2AudioForConditionalGeneration,
-    Qwen2_5_VLForConditionalGeneration,
 )
 
 
@@ -62,11 +63,14 @@ class PipelineConfig:
     audio_max_new_tokens: int
     video_max_new_tokens: int
     video_fps: float
-    video_attn_implementation: str
+    video_conv_mode: str
+    video_num_frames: int
+    video_max_frames: int
     video_quantization: str
+    video_cpu_offload: bool
+    video_gpu_memory_limit_gib: int
+    video_cpu_memory_limit_gib: int
     video_use_cache: bool
-    video_min_pixels: Optional[int]
-    video_max_pixels: Optional[int]
     bert_max_length: int
     limit: Optional[int]
     append_output: bool
@@ -101,7 +105,7 @@ def parse_args() -> PipelineConfig:
     )
     parser.add_argument(
         "--video-model-id",
-        default="Qwen/Qwen2.5-VL-7B-Instruct",
+        default="Zhang199/TinyLLaVA-Video-Qwen2.5-3B-Group-1fps-512",
         help="Video cue extraction model.",
     )
     parser.add_argument(
@@ -133,14 +137,25 @@ def parse_args() -> PipelineConfig:
     parser.add_argument(
         "--video-fps",
         type=float,
-        default=0.5,
-        help="Frame sampling rate passed to Qwen2.5-VL for video understanding.",
+        default=1.0,
+        help="Frame sampling rate used for TinyLLaVA-Video frame selection.",
     )
     parser.add_argument(
-        "--video-attn-implementation",
-        choices=["auto", "sdpa", "flash_attention_2", "eager"],
-        default="auto",
-        help="Attention implementation for Qwen2.5-VL. auto prefers flash_attention_2 when available, else sdpa.",
+        "--video-conv-mode",
+        default="qwen2_base",
+        help="Conversation template mode used by TinyLLaVA-Video.",
+    )
+    parser.add_argument(
+        "--video-num-frames",
+        type=int,
+        default=-1,
+        help="Fixed number of video frames for TinyLLaVA-Video. Use -1 to sample by fps.",
+    )
+    parser.add_argument(
+        "--video-max-frames",
+        type=int,
+        default=64,
+        help="Upper bound of sampled video frames when fps-based sampling is used.",
     )
     parser.add_argument(
         "--video-quantization",
@@ -149,21 +164,26 @@ def parse_args() -> PipelineConfig:
         help="Quantization mode for Qwen2.5-VL. Requires bitsandbytes for 8bit/4bit.",
     )
     parser.add_argument(
+        "--video-cpu-offload",
+        action="store_true",
+        help="Enable CPU offload for 8-bit VL loading to reduce GPU memory pressure.",
+    )
+    parser.add_argument(
+        "--video-gpu-memory-limit-gib",
+        type=int,
+        default=20,
+        help="GPU memory limit used with --video-cpu-offload.",
+    )
+    parser.add_argument(
+        "--video-cpu-memory-limit-gib",
+        type=int,
+        default=64,
+        help="CPU memory limit used with --video-cpu-offload.",
+    )
+    parser.add_argument(
         "--video-use-cache",
         action="store_true",
         help="Enable KV cache during video generation. Disabled by default to save GPU memory.",
-    )
-    parser.add_argument(
-        "--video-min-pixels",
-        type=int,
-        default=256 * 28 * 28,
-        help="Minimum visual tokens for the video processor.",
-    )
-    parser.add_argument(
-        "--video-max-pixels",
-        type=int,
-        default=1024 * 28 * 28,
-        help="Maximum visual tokens for the video processor. Lower values reduce GPU memory.",
     )
     parser.add_argument(
         "--bert-max-length",
@@ -201,11 +221,14 @@ def parse_args() -> PipelineConfig:
         audio_max_new_tokens=args.audio_max_new_tokens,
         video_max_new_tokens=args.video_max_new_tokens,
         video_fps=args.video_fps,
-        video_attn_implementation=args.video_attn_implementation,
+        video_conv_mode=args.video_conv_mode,
+        video_num_frames=args.video_num_frames,
+        video_max_frames=args.video_max_frames,
         video_quantization=args.video_quantization,
+        video_cpu_offload=args.video_cpu_offload,
+        video_gpu_memory_limit_gib=args.video_gpu_memory_limit_gib,
+        video_cpu_memory_limit_gib=args.video_cpu_memory_limit_gib,
         video_use_cache=args.video_use_cache,
-        video_min_pixels=args.video_min_pixels,
-        video_max_pixels=args.video_max_pixels,
         bert_max_length=args.bert_max_length,
         limit=args.limit,
         append_output=args.append_output,
@@ -239,6 +262,23 @@ def empty_cuda_cache(device: str) -> None:
         return
     with torch.cuda.device(device):
         torch.cuda.empty_cache()
+
+
+def device_map_value(device: str) -> Any:
+    if device == "cpu":
+        return "cpu"
+    if device == "cuda":
+        return 0
+    if device.startswith("cuda:"):
+        return int(device.split(":", maxsplit=1)[1])
+    raise ValueError(f"Unsupported device for quantized loading: {device}")
+
+
+def build_video_max_memory(config: PipelineConfig) -> Dict[Any, str]:
+    return {
+        device_map_value(config.video_device): f"{config.video_gpu_memory_limit_gib}GiB",
+        "cpu": f"{config.video_cpu_memory_limit_gib}GiB",
+    }
 
 
 def torch_dtype_from_name(name: str) -> Any:
@@ -359,19 +399,10 @@ def json_dumps(data: Dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
-def resolve_video_attn_implementation(config: PipelineConfig) -> str:
-    if config.video_attn_implementation != "auto":
-        return config.video_attn_implementation
-    if (
-        config.qwen_dtype in {"bfloat16", "float16"}
-        and importlib.util.find_spec("flash_attn") is not None
-    ):
-        return "flash_attention_2"
-    return "sdpa"
-
-
 def build_video_quantization_config(config: PipelineConfig) -> Optional[BitsAndBytesConfig]:
     if config.video_quantization == "none":
+        if config.video_cpu_offload:
+            raise ValueError("--video-cpu-offload requires --video-quantization 8bit.")
         return None
 
     if importlib.util.find_spec("bitsandbytes") is None:
@@ -385,7 +416,13 @@ def build_video_quantization_config(config: PipelineConfig) -> Optional[BitsAndB
         compute_dtype = torch.bfloat16
 
     if config.video_quantization == "8bit":
-        return BitsAndBytesConfig(load_in_8bit=True)
+        return BitsAndBytesConfig(
+            load_in_8bit=True,
+            llm_int8_enable_fp32_cpu_offload=config.video_cpu_offload,
+        )
+
+    if config.video_cpu_offload:
+        raise ValueError("--video-cpu-offload currently supports 8bit quantization only.")
 
     return BitsAndBytesConfig(
         load_in_4bit=True,
@@ -409,30 +446,71 @@ class MultiModalEmotionPipeline:
         self.audio_model.to(config.audio_device)
         self.audio_model.eval()
 
-        self.video_processor = AutoProcessor.from_pretrained(
-            config.video_model_id,
-            min_pixels=config.video_min_pixels,
-            max_pixels=config.video_max_pixels,
+        if importlib.util.find_spec("tinyllava") is None:
+            raise ImportError(
+                "tinyllava is required for video inference. Install the official package from "
+                "https://github.com/ZhangXJ199/TinyLLaVA-Video"
+            )
+        if importlib.util.find_spec("pytorchvideo") is None:
+            raise ImportError(
+                "pytorchvideo is required for TinyLLaVA-Video inference. "
+                "Install it with: pip install pytorchvideo"
+            )
+
+        from pytorchvideo.data.encoded_video import EncodedVideo
+        from tinyllava.data import TextPreprocess, VideoPreprocess
+        from tinyllava.model import TinyLlavaForConditionalGeneration
+        from tinyllava.utils import (
+            DEFAULT_IMAGE_TOKEN,
+            KeywordsStoppingCriteria,
+            Message,
+            disable_torch_init,
         )
-        video_model_kwargs: Dict[str, Any] = {
-            "low_cpu_mem_usage": True,
-            "attn_implementation": resolve_video_attn_implementation(config),
-        }
+
+        disable_torch_init()
+        self.video_encoded_video_cls = EncodedVideo
+        self.video_default_image_token = DEFAULT_IMAGE_TOKEN
+        self.video_keywords_stopping_cls = KeywordsStoppingCriteria
+        self.video_message_cls = Message
+
+        video_model_kwargs: Dict[str, Any] = {"low_cpu_mem_usage": True}
         if self.video_quantization_config is None:
             video_model_kwargs["torch_dtype"] = self.qwen_dtype
         else:
             video_model_kwargs["quantization_config"] = self.video_quantization_config
-            video_model_kwargs["device_map"] = {"": config.video_device}
+            if config.video_cpu_offload:
+                video_model_kwargs["device_map"] = "auto"
+                video_model_kwargs["max_memory"] = build_video_max_memory(config)
+            else:
+                video_model_kwargs["device_map"] = {"": device_map_value(config.video_device)}
             if self.qwen_dtype != "auto":
                 video_model_kwargs["torch_dtype"] = self.qwen_dtype
 
-        self.video_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        self.video_model = TinyLlavaForConditionalGeneration.from_pretrained(
             config.video_model_id,
             **video_model_kwargs,
         )
         if self.video_quantization_config is None:
             self.video_model.to(config.video_device)
         self.video_model.eval()
+
+        self.video_tokenizer = AutoTokenizer.from_pretrained(
+            config.video_model_id,
+            use_fast=False,
+            trust_remote_code=True,
+        )
+        self.video_text_processor = TextPreprocess(self.video_tokenizer, config.video_conv_mode)
+        self.video_frame_processor = VideoPreprocess(
+            self.video_model.vision_tower._image_processor,
+            data_args=self.video_model.config,
+        )
+
+        if hasattr(self.video_model, "get_memory_footprint"):
+            footprint_gib = self.video_model.get_memory_footprint() / (1024**3)
+            print(
+                f"Video model loaded with quantization={config.video_quantization}, "
+                f"footprint={footprint_gib:.2f} GiB"
+            )
 
         self.bert_tokenizer = AutoTokenizer.from_pretrained(config.bert_model_id)
         self.bert_model = AutoModelForSequenceClassification.from_pretrained(config.bert_model_id)
@@ -522,47 +600,82 @@ class MultiModalEmotionPipeline:
         if not sample.video_path.exists():
             raise FileNotFoundError(f"Video file not found: {sample.video_path}")
         empty_cuda_cache(self.config.video_device)
-
-        conversation = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "video", "path": sample.video_path.as_posix()},
-                    {"type": "text", "text": self.build_video_instruction()},
-                ],
-            },
-        ]
-
-        inputs = self.video_processor.apply_chat_template(
-            conversation,
-            fps=self.config.video_fps,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
+        video = self.video_encoded_video_cls.from_path(
+            sample.video_path.as_posix(),
+            decoder="decord",
+            decode_audio=False,
         )
-        inputs = move_batch_to_device(inputs, self.config.video_device)
+        duration = float(video.duration)
+        clip = video.get_clip(start_sec=0.0, end_sec=duration)
+        if clip is None or "video" not in clip:
+            raise ValueError(f"Failed to decode video frames from {sample.video_path}")
+
+        video_data = clip["video"].permute(1, 0, 2, 3)
+        frame_indices = self.select_video_frame_indices(
+            total_frames=video_data.shape[0],
+            duration=duration,
+        )
+        processed_frames = [
+            self.video_frame_processor(video_data[index]) for index in frame_indices
+        ]
+        video_tensor = torch.stack(processed_frames).unsqueeze(0)
+
+        query = f"{self.video_default_image_token}\n{self.build_video_instruction()}"
+        message = self.video_message_cls()
+        message.add_message(query)
+        text_inputs = self.video_text_processor(message.messages, mode="eval")
+        input_ids = text_inputs["input_ids"].unsqueeze(0).to(self.config.video_device)
+        stop_str = self.video_text_processor.template.separator.apply()[1]
+        stopping_criteria = self.video_keywords_stopping_cls(
+            [stop_str],
+            self.video_tokenizer,
+            input_ids,
+        )
 
         with torch.inference_mode():
             generated_ids = self.video_model.generate(
-                **inputs,
-                max_new_tokens=self.config.video_max_new_tokens,
+                input_ids=input_ids,
+                video=video_tensor,
                 do_sample=False,
                 use_cache=self.config.video_use_cache,
+                max_new_tokens=self.config.video_max_new_tokens,
+                stopping_criteria=[stopping_criteria],
+                pad_token_id=self.video_tokenizer.pad_token_id or self.video_tokenizer.eos_token_id,
             )
 
-        trimmed_ids = generated_ids[:, inputs["input_ids"].shape[1] :]
-        response = self.video_processor.batch_decode(
+        trimmed_ids = generated_ids[:, input_ids.shape[1] :]
+        response = self.video_tokenizer.batch_decode(
             trimmed_ids,
             skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )[0]
-        del inputs
+        )[0].strip()
+        if response.endswith(stop_str):
+            response = response[: -len(stop_str)].strip()
+
+        del clip
+        del video
+        del video_data
+        del video_tensor
+        del input_ids
         del generated_ids
         del trimmed_ids
         empty_cuda_cache(self.config.video_device)
         video_json = normalize_cue_json(response, "video")
         return {"json": video_json, "raw_response": response}
+
+    def select_video_frame_indices(self, total_frames: int, duration: float) -> List[int]:
+        if total_frames <= 0:
+            raise ValueError("The decoded video contains no frames.")
+
+        if self.config.video_num_frames > 0:
+            target_frames = min(self.config.video_num_frames, total_frames)
+        elif self.config.video_fps > 0:
+            target_frames = max(1, math.ceil(duration * self.config.video_fps))
+            target_frames = min(target_frames, self.config.video_max_frames, total_frames)
+        else:
+            target_frames = min(self.config.video_max_frames, total_frames)
+
+        indices = np.linspace(0, total_frames - 1, num=target_frames, dtype=int)
+        return indices.tolist()
 
     def build_think(
         self,

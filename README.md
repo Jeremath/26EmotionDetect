@@ -3,7 +3,7 @@
 本项目提供一个简洁的单文件多模态情感推理脚手架，满足以下流程：
 
 1. 使用 `Qwen/Qwen2-Audio-7B-Instruct` 从音频中提取情感线索。
-2. 使用 `Zhang199/TinyLLaVA-Video-Qwen2.5-3B-Group-1fps-512` 从视频中提取情感线索。
+2. 使用 `Qwen/Qwen2.5-VL-3B-Instruct` 从视频中提取情感线索。
 3. 将 `文本 + 音频JSON线索 + 视频JSON线索` 拼接成一个字符串。
 4. 使用 `bhadresh-savani/bert-base-uncased-emotion` 对拼接后的文本做情感分类。
 5. 将每条样本的完整输入与输出写入 `output.log`，方便后续继续做准确率等指标实验。
@@ -103,13 +103,12 @@ Prompt3
 conda create -n emotion-qwen python=3.10 -y
 conda activate emotion-qwen
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install "git+https://github.com/huggingface/transformers" accelerate librosa sentencepiece decord pytorchvideo bitsandbytes av
-pip install "git+https://github.com/ZhangXJ199/TinyLLaVA-Video.git"
+pip install "git+https://github.com/huggingface/transformers" accelerate librosa sentencepiece decord bitsandbytes av
 ```
 
 说明：
 
-- 视频模态目前改为 `TinyLLaVA-Video`，因此需要额外安装官方 `tinyllava` 包和 `pytorchvideo`。
+- 视频模态当前使用 `Qwen/Qwen2.5-VL-3B-Instruct`，通过 `transformers` 官方接口处理本地视频。
 - 如果你使用其他 CUDA 版本，请把 PyTorch 安装命令替换成与你服务器匹配的版本。
 - 首次运行会自动从 Hugging Face 下载模型，确保服务器能访问相关模型仓库。
 
@@ -126,10 +125,10 @@ python multimodal_emotion_pipeline.py \
   --bert-device cuda:0 \
   --qwen-dtype bfloat16 \
   --video-fps 1.0 \
-  --video-max-frames 64
+  --video-max-pixels 802816
 ```
 
-如果你希望进一步降低 `TinyLLaVA-Video` 的显存占用，可以打开量化：
+如果你希望进一步降低视频模型的显存占用，可以打开量化：
 
 8-bit 量化：
 
@@ -143,7 +142,7 @@ python multimodal_emotion_pipeline.py \
   --qwen-dtype float16 \
   --video-quantization 8bit \
   --video-fps 1.0 \
-  --video-max-frames 64
+  --video-max-pixels 802816
 ```
 
 4-bit 量化：
@@ -158,7 +157,7 @@ python multimodal_emotion_pipeline.py \
   --qwen-dtype float16 \
   --video-quantization 4bit \
   --video-fps 1.0 \
-  --video-max-frames 64
+  --video-max-pixels 802816
 ```
 
 如果 8-bit 后显存仍然紧张，可以进一步给 VL 开 CPU offload：
@@ -176,7 +175,7 @@ python multimodal_emotion_pipeline.py \
   --video-gpu-memory-limit-gib 20 \
   --video-cpu-memory-limit-gib 64 \
   --video-fps 1.0 \
-  --video-max-frames 64
+  --video-max-pixels 802816
 ```
 
 如果你的音频、视频、文本路径都希望相对于某个统一目录解析，可以增加：
@@ -205,13 +204,12 @@ python multimodal_emotion_pipeline.py \
 - `--audio-device` / `--video-device` / `--bert-device`：三个模型的运行设备。
 - `--audio-max-new-tokens`：音频线索提取最大生成长度。
 - `--video-max-new-tokens`：视频线索提取最大生成长度。
-- `--video-fps`：TinyLLaVA-Video 的抽帧频率。
-- `--video-conv-mode`：TinyLLaVA-Video 使用的对话模板，默认是 `qwen2_base`。
-- `--video-num-frames`：固定抽帧数。若为 `-1`，则按 `--video-fps` 采样。
-- `--video-max-frames`：按 fps 采样时的最大帧数上限。
+- `--video-fps`：视频抽帧频率。
+- `--video-attn-implementation`：视频模型注意力实现，默认自动优先使用 `flash_attention_2`。
 - `--video-quantization`：VL 量化模式，可选 `none`、`8bit`、`4bit`。
 - `--video-cpu-offload`：仅对 VL 的 8-bit 量化生效，用 CPU 换更低的 GPU 显存占用。
 - `--video-gpu-memory-limit-gib` / `--video-cpu-memory-limit-gib`：配合 CPU offload 使用。
+- `--video-min-pixels` / `--video-max-pixels`：视频视觉 token 范围，减小上限可以显著节省显存。
 - `--video-use-cache`：开启视频生成 KV cache，默认关闭以节省显存。
 - `--bert-max-length`：BERT 输入最大长度，默认 512。
 - `--limit`：只处理前 N 条样本，便于调试。
@@ -281,7 +279,7 @@ python multimodal_emotion_pipeline.py \
 - 当前脚本本身就是逐条样本处理，因此对视频模型来说有效 batch size 已经是 `1`。
 - 如果显存仍然紧张，优先尝试 `--video-quantization 8bit`，其次再尝试 `--video-quantization 4bit`。
 - 量化主要降低的是视频模型权重占用；如果视频过长或抽帧过密，仍然可能因为激活显存峰值而 OOM。
-- 对长视频来说，通常先把 `--video-fps` 调到 `0.5` 或 `0.25`，再考虑减小 `--video-max-frames`。
+- 对长视频来说，通常先把 `--video-fps` 调到 `0.5` 或 `0.25`，再考虑减小 `--video-max-pixels`。
 # 更新git
 git pull # 如果远程仓库没有变化可以不执行
 git add .

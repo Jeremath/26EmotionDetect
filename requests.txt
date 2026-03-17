@@ -9,7 +9,6 @@ accelerate==1.2.1
 tokenizers==0.21.0
 safetensors==0.4.5
 sentencepiece==0.2.0
-git+https://github.com/ZhangXJ199/TinyLLaVA-Video.git
 
 librosa==0.10.2.post1
 soundfile==0.12.1
@@ -17,7 +16,6 @@ numpy==1.26.4
 scipy==1.14.1
 
 decord==0.6.0
-pytorchvideo==0.1.5
 pillow==11.0.0
 einops==0.8.0
 bitsandbytes==0.45.2

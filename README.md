@@ -249,9 +249,30 @@ python multimodal_emotion_pipeline.py \
 
 ## 说明
 
-当前版本没有实现准确率、F1、召回率等评测指标，这部分按你的要求暂时留空，但输入输出结构已经整理好，后续可以很方便继续扩展。
+当前版本没有实现准确率、F1、召回率等评测指标，这部分暂时留空，但输入输出结构已经整理好，后续可以很方便继续扩展。
 
 补充说明：
 
 - 当前脚本本身就是逐条样本处理，因此对 VL 来说有效 batch size 已经是 `1`，没有再额外增大。
 - 如果显存仍然紧张，优先尝试 `--video-quantization 8bit`，其次再尝试 `--video-quantization 4bit`。
+# 更新git
+git pull # 如果远程仓库没有变化可以不执行
+git add .
+git commit -m "update"
+git push
+# 版本回滚
+git log --oneline --graph
+git reset --hard commitID
+git push -f
+# 常见错误
+## 服务器上执行主程序时，无法正常链接huggingface仓库
+执行 export HF_ENDPOINT=https://hf-mirror.com 切换国内镜像源
+如果上述命令仍然不行执行
+unset HF_ENDPOINT
+source /etc/network_turbo
+开启学术加速
+## AutoDL云平台加载模型系统盘不足的问题
+模型占用系统盘空间很大，导致系统盘空间不够
+终端中执行：
+export HF_HOME=/root/autodl-tmp/cache/
+将模型的缓存保存到数据盘。

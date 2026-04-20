@@ -1,0 +1,44 @@
+[
+  {
+    "id": "sample_0001",
+    "text": "Why cant you understand my feel?",
+    "audio_path": "/rczhang/rczhang/zhangrch/code2/26EmotionDetect/data/test/audio/sample_0001.mp3",
+    "video_path": "/rczhang/rczhang/zhangrch/code2/26EmotionDetect/data/test/video/sample_0001.mp4",
+    "emotion_cues": {
+      "text": "Why cant you understand my feel?",
+      "audio": [
+        "angry mood",
+        "disgusted mood"
+      ],
+      "video": [
+        "anger: The person's furrowed brow and tense facial expression suggest a strong emotional state of anger.",
+        "intensity: The clenched jaw and focused gaze indicate a high level of intensity or determination."
+      ]
+    },
+    "audio_cues": {
+      "audio": [
+        "angry mood",
+        "disgusted mood"
+      ]
+    },
+    "video_cues": {
+      "video": [
+        "anger: The person's furrowed brow and tense facial expression suggest a strong emotional state of anger.",
+        "intensity: The clenched jaw and focused gaze indicate a high level of intensity or determination."
+      ]
+    },
+    "audio_raw_response": "{\\\"audio\\\":[\\\"angry mood\\\", \\\"disgusted mood\\\"]}",
+    "video_raw_response": "```json\n{\n  \"video\": [\n    {\n      \"cue1\": \"anger\",\n      \"description\": \"The person's furrowed brow and tense facial expression suggest a strong emotional state of anger.\"\n    },\n    {\n      \"cue1\": \"intensity\",\n      \"description\": \"The clenched jaw and focused gaze indicate a high level of intensity or determination.\"\n    }\n  ]\n}\n```",
+    "model_output": "<think>Okay, so I need to figure out the emotion of the speaker based on the given text, audio, and video cues. Let's break it down step by step.\n\nFirst, the text says, \"Why can't you understand my feel?\" This seems a bit frustrated or annoyed. The speaker is expressing confusion or irritation, which often comes with a mix of emotions, but leaning towards frustration or anger.\n\nLooking at the audio cues, the user provided an array with \"angry mood\" and \"disgusted mood.\" So, the audio suggests both anger and disgust. Anger is pretty clear here, but disgust might be a bit more subtle. The text and audio together point towards anger.\n\nNow, the video cues give more context. The person has a \"furious\" expression, which is a strong sign of anger. Their \"furrowed brow\" and \"tense facial expression\" definitely show anger. The \"clenched jaw\" and \"focused gaze\" also indicate determination, which can accompany anger, especially if the person is trying to convey something strong or firm.\n\nPutting it all together: the text implies frustration, the audio mentions anger and disgust, and the video shows angry facial expressions. While disgust is mentioned, the intensity and facial expressions are more indicative of anger. So, the emotion is likely anger.</think><answer>anger</answer>",
+    "raw_model_output": "Okay, so I need to figure out the emotion of the speaker based on the given text, audio, and video cues. Let's break it down step by step.\n\nFirst, the text says, \"Why can't you understand my feel?\" This seems a bit frustrated or annoyed. The speaker is expressing confusion or irritation, which often comes with a mix of emotions, but leaning towards frustration or anger.\n\nLooking at the audio cues, the user provided an array with \"angry mood\" and \"disgusted mood.\" So, the audio suggests both anger and disgust. Anger is pretty clear here, but disgust might be a bit more subtle. The text and audio together point towards anger.\n\nNow, the video cues give more context. The person has a \"furious\" expression, which is a strong sign of anger. Their \"furrowed brow\" and \"tense facial expression\" definitely show anger. The \"clenched jaw\" and \"focused gaze\" also indicate determination, which can accompany anger, especially if the person is trying to convey something strong or firm.\n\nPutting it all together: the text implies frustration, the audio mentions anger and disgust, and the video shows angry facial expressions. While disgust is mentioned, the intensity and facial expressions are more indicative of anger. So, the emotion is likely anger.\n</think>\n\n<answer>anger</answer>",
+    "emotion_prediction": "anger",
+    "answer": "anger",
+    "think": "Okay, so I need to figure out the emotion of the speaker based on the given text, audio, and video cues. Let's break it down step by step.\n\nFirst, the text says, \"Why can't you understand my feel?\" This seems a bit frustrated or annoyed. The speaker is expressing confusion or irritation, which often comes with a mix of emotions, but leaning towards frustration or anger.\n\nLooking at the audio cues, the user provided an array with \"angry mood\" and \"disgusted mood.\" So, the audio suggests both anger and disgust. Anger is pretty clear here, but disgust might be a bit more subtle. The text and audio together point towards anger.\n\nNow, the video cues give more context. The person has a \"furious\" expression, which is a strong sign of anger. Their \"furrowed brow\" and \"tense facial expression\" definitely show anger. The \"clenched jaw\" and \"focused gaze\" also indicate determination, which can accompany anger, especially if the person is trying to convey something strong or firm.\n\nPutting it all together: the text implies frustration, the audio mentions anger and disgust, and the video shows angry facial expressions. While disgust is mentioned, the intensity and facial expressions are more indicative of anger. So, the emotion is likely anger.",
+    "prompt": {
+      "system": "You are a multimodal emotion analysis expert. Use the user text, audio cues, and video cues to reason about the speaker's emotion. Return exactly two XML-style tags with no extra text: <think>your reasoning</think><answer>final emotion label</answer>. The <answer> tag must contain only the final emotion label.",
+      "user": "Text:\nWhy cant you understand my feel?\n\nAudio emotion cues:\n{\"audio\":[\"angry mood\",\"disgusted mood\"]}\n\nVideo emotion cues:\n{\"video\":[\"anger: The person's furrowed brow and tense facial expression suggest a strong emotional state of anger.\",\"intensity: The clenched jaw and focused gaze indicate a high level of intensity or determination.\"]}"
+    },
+    "label": null,
+    "meta": null
+  }
+]

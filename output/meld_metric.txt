@@ -1,0 +1,24 @@
+MELD / generic classification metrics
+
+Related-work note:
+MELD papers commonly report Accuracy and Weighted F1 as the primary metrics.
+Examples:
+- Frontiers 2023 GCF2-Net reports improvements on MELD in terms of accuracy and weighted average F1.
+  https://www.frontiersin.org/articles/10.3389/fnins.2023.1183132/full
+- Adaptive weighting in a transformer framework for multimodal emotion recognition reports MELD accuracy and weighted F1 in Table 3.
+  https://www.sciencedirect.com/science/article/pii/S0167639325001475
+
+Evaluated samples: 5
+Accuracy: 0.200000
+Weighted Precision: 0.800000
+Weighted Recall: 0.200000
+Weighted F1: 0.320000
+Macro Precision: 0.250000
+Macro Recall: 0.062500
+Macro F1: 0.100000
+
+Per-label metrics:
+- angry: support=0, precision=0.000000, recall=0.000000, f1=0.000000
+- fear: support=0, precision=0.000000, recall=0.000000, f1=0.000000
+- neutral: support=4, precision=1.000000, recall=0.250000, f1=0.400000
+- surprise: support=1, precision=0.000000, recall=0.000000, f1=0.000000

@@ -1,0 +1,78 @@
+[
+  {
+    "id": "sample_0001",
+    "text": "Why cant you understand my feel?",
+    "audio_path": "/rczhang/rczhang/zhangrch/code2/26EmotionDetect/data/test/audio/sample_0001.mp3",
+    "video_path": "/rczhang/rczhang/zhangrch/code2/26EmotionDetect/data/test/video/sample_0001.mp4",
+    "emotion_cues": {
+      "text": "Why cant you understand my feel?",
+      "audio": [
+        "angry mood",
+        "disgusted mood"
+      ],
+      "video": [
+        "anger: The person's furrowed brow and tense facial expression suggest a strong emotional state of anger.",
+        "intensity: The clenched jaw and focused gaze indicate a high level of intensity or determination."
+      ]
+    },
+    "audio_cues": {
+      "audio": [
+        "angry mood",
+        "disgusted mood"
+      ]
+    },
+    "video_cues": {
+      "video": [
+        "anger: The person's furrowed brow and tense facial expression suggest a strong emotional state of anger.",
+        "intensity: The clenched jaw and focused gaze indicate a high level of intensity or determination."
+      ]
+    },
+    "audio_raw_response": "{\\\"audio\\\":[\\\"angry mood\\\", \\\"disgusted mood\\\"]}",
+    "video_raw_response": "```json\n{\n  \"video\": [\n    {\n      \"cue1\": \"anger\",\n      \"description\": \"The person's furrowed brow and tense facial expression suggest a strong emotional state of anger.\"\n    },\n    {\n      \"cue1\": \"intensity\",\n      \"description\": \"The clenched jaw and focused gaze indicate a high level of intensity or determination.\"\n    }\n  ]\n}\n```",
+    "debate_max_rounds": 3,
+    "debate_history": [
+      {
+        "round_type": "initial",
+        "round_index": 0,
+        "deepseek": {
+          "model_name": "DeepSeek-R1-Distill-Qwen-7B",
+          "model_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+          "system_prompt": "You are a multimodal emotion analysis expert participating in a two-model debate. Read the text, audio cues, and video cues carefully. Return exactly two XML-style tags with no extra text: <think>your reasoning</think><answer>final emotion label</answer>. The <answer> tag must contain only the final emotion label.",
+          "user_prompt": "Text:\nWhy cant you understand my feel?\n\nAudio emotion cues:\n{\"audio\":[\"angry mood\",\"disgusted mood\"]}\n\nVideo emotion cues:\n{\"video\":[\"anger: The person's furrowed brow and tense facial expression suggest a strong emotional state of anger.\",\"intensity: The clenched jaw and focused gaze indicate a high level of intensity or determination.\"]}",
+          "raw_model_output": "Alright, so I'm trying to figure out the emotion label for this text, audio, and video cues. Let me break it down step by step.\n\nFirst, the text says, \"Why can't you understand my feel?\" That sounds a bit frustrated or annoyed. The person is expressing confusion or irritation, which leans towards anger.\n\nLooking at the audio cues, they mention \"angry mood\" and \"disgusted mood.\" So, the audio is pointing towards anger, but there's also disgust mentioned. Hmm, that's interesting. Disgust is more about something being yucky or repulsive, but in this context, the person is talking about understanding feelings, so maybe it's more about frustration.\n\nNow, the video cues describe a person with a \"furrowed brow and tense facial expression,\" which is classic for showing anger. They also mention a \"clenched jaw and focused gaze,\" which again points towards anger. The intensity is high, suggesting the person is determined or passionate about their point.\n\nPutting it all together, the text and video both clearly show anger. The audio mentions both anger and disgust, but disgust doesn't fit here because the context is about emotions and understanding, not something physical or yucky. So, the main emotion is anger.\n</think>\n\n<answer>anger</answer>",
+          "model_output": "<think>Alright, so I'm trying to figure out the emotion label for this text, audio, and video cues. Let me break it down step by step.\n\nFirst, the text says, \"Why can't you understand my feel?\" That sounds a bit frustrated or annoyed. The person is expressing confusion or irritation, which leans towards anger.\n\nLooking at the audio cues, they mention \"angry mood\" and \"disgusted mood.\" So, the audio is pointing towards anger, but there's also disgust mentioned. Hmm, that's interesting. Disgust is more about something being yucky or repulsive, but in this context, the person is talking about understanding feelings, so maybe it's more about frustration.\n\nNow, the video cues describe a person with a \"furrowed brow and tense facial expression,\" which is classic for showing anger. They also mention a \"clenched jaw and focused gaze,\" which again points towards anger. The intensity is high, suggesting the person is determined or passionate about their point.\n\nPutting it all together, the text and video both clearly show anger. The audio mentions both anger and disgust, but disgust doesn't fit here because the context is about emotions and understanding, not something physical or yucky. So, the main emotion is anger.</think><answer>anger</answer>",
+          "think": "Alright, so I'm trying to figure out the emotion label for this text, audio, and video cues. Let me break it down step by step.\n\nFirst, the text says, \"Why can't you understand my feel?\" That sounds a bit frustrated or annoyed. The person is expressing confusion or irritation, which leans towards anger.\n\nLooking at the audio cues, they mention \"angry mood\" and \"disgusted mood.\" So, the audio is pointing towards anger, but there's also disgust mentioned. Hmm, that's interesting. Disgust is more about something being yucky or repulsive, but in this context, the person is talking about understanding feelings, so maybe it's more about frustration.\n\nNow, the video cues describe a person with a \"furrowed brow and tense facial expression,\" which is classic for showing anger. They also mention a \"clenched jaw and focused gaze,\" which again points towards anger. The intensity is high, suggesting the person is determined or passionate about their point.\n\nPutting it all together, the text and video both clearly show anger. The audio mentions both anger and disgust, but disgust doesn't fit here because the context is about emotions and understanding, not something physical or yucky. So, the main emotion is anger.",
+          "answer": "anger",
+          "normalized_answer": "anger"
+        },
+        "glm": {
+          "model_name": "GLM-4-9B-Chat",
+          "model_id": "THUDM/glm-4-9b-chat",
+          "system_prompt": "You are a multimodal emotion analysis expert participating in a two-model debate. Read the text, audio cues, and video cues carefully. Return exactly two XML-style tags with no extra text: <think>your reasoning</think><answer>final emotion label</answer>. The <answer> tag must contain only the final emotion label.",
+          "user_prompt": "Text:\nWhy cant you understand my feel?\n\nAudio emotion cues:\n{\"audio\":[\"angry mood\",\"disgusted mood\"]}\n\nVideo emotion cues:\n{\"video\":[\"anger: The person's furrowed brow and tense facial expression suggest a strong emotional state of anger.\",\"intensity: The clenched jaw and focused gaze indicate a high level of intensity or determination.\"]}",
+          "raw_model_output": "<think>The text indicates a sense of confusion or frustration, while the audio and video cues both point towards anger. The audio cues mention an angry and disgusted mood, and the video analysis describes a strong emotional state of anger with high intensity. The consistency between the audio and video cues suggests that the emotion being expressed is anger.</think><answer>Anger</answer>\n<think>The text conveys a sense of confusion or frustration, which is not directly supported by the audio and video cues. The audio and video cues both strongly indicate anger, with the text possibly reflecting a lack of understanding or a desire for recognition of the emotion. The discrepancy between the text and the multimodal cues suggests that the text might be expressing a desire to be understood or acknowledged, while the audio and video cues are clear in indicating anger.</think><answer>Anger</answer>\n<think>The text expresses a desire to be understood or acknowledged, which could be interpreted as a sign of frustration or confusion. However, the audio and video cues are quite clear in indicating a strong emotional state of anger. The text's sentiment does't align with the multimodal cues, but the multimodal cues are typically more reliable for emotion analysis.</think><answer>Anger</answer>\n<think>The text suggests a potential for confusion or frustration, but the audio and video cues are definitive in pointing towards anger. The text might be expressing a struggle to articulate or understand the emotion, but the multimodal cues provide a consistent and clear indication of anger.</think><answer>Anger</answer>\n<think>The text indicates a desire for understanding or recognition of the emotion, which could be interpreted as a sign of frustration or confusion. The audio and video cues, however, are unanimous in their indication of anger. Given the multimodal approach, which considers both audio and visual information, the weight of evidence points towards anger as the dominant emotion.</think><answer>Anger</answer>\n<think>The text conveys a sense of confusion or frustration, which might be a manifestation of the underlying anger detected in the audio and video cues. The audio cues suggest an angry mood, and the video cues reinforce this with descriptions of anger through facial expressions and intensity. The multimodal analysis suggests that the underlying emotion is anger, despite the text's indication of confusion or frustration.</think><answer>Anger</answer>\n<think>The text's sentiment of confusion or frustration is at odds with the audio and video cues, which both",
+          "model_output": "<think>The text indicates a sense of confusion or frustration, while the audio and video cues both point towards anger. The audio cues mention an angry and disgusted mood, and the video analysis describes a strong emotional state of anger with high intensity. The consistency between the audio and video cues suggests that the emotion being expressed is anger.</think><answer>Anger</answer>",
+          "think": "The text indicates a sense of confusion or frustration, while the audio and video cues both point towards anger. The audio cues mention an angry and disgusted mood, and the video analysis describes a strong emotional state of anger with high intensity. The consistency between the audio and video cues suggests that the emotion being expressed is anger.",
+          "answer": "Anger",
+          "normalized_answer": "anger"
+        },
+        "agreement": true
+      }
+    ],
+    "termination_reason": "initial_agreement",
+    "consensus_reached": true,
+    "consensus_round": 0,
+    "selected_model": "consensus",
+    "model_output": "<think>The text indicates a sense of confusion or frustration, while the audio and video cues both point towards anger. The audio cues mention an angry and disgusted mood, and the video analysis describes a strong emotional state of anger with high intensity. The consistency between the audio and video cues suggests that the emotion being expressed is anger.</think><answer>Anger</answer>",
+    "raw_model_output": "<think>The text indicates a sense of confusion or frustration, while the audio and video cues both point towards anger. The audio cues mention an angry and disgusted mood, and the video analysis describes a strong emotional state of anger with high intensity. The consistency between the audio and video cues suggests that the emotion being expressed is anger.</think><answer>Anger</answer>\n<think>The text conveys a sense of confusion or frustration, which is not directly supported by the audio and video cues. The audio and video cues both strongly indicate anger, with the text possibly reflecting a lack of understanding or a desire for recognition of the emotion. The discrepancy between the text and the multimodal cues suggests that the text might be expressing a desire to be understood or acknowledged, while the audio and video cues are clear in indicating anger.</think><answer>Anger</answer>\n<think>The text expresses a desire to be understood or acknowledged, which could be interpreted as a sign of frustration or confusion. However, the audio and video cues are quite clear in indicating a strong emotional state of anger. The text's sentiment does't align with the multimodal cues, but the multimodal cues are typically more reliable for emotion analysis.</think><answer>Anger</answer>\n<think>The text suggests a potential for confusion or frustration, but the audio and video cues are definitive in pointing towards anger. The text might be expressing a struggle to articulate or understand the emotion, but the multimodal cues provide a consistent and clear indication of anger.</think><answer>Anger</answer>\n<think>The text indicates a desire for understanding or recognition of the emotion, which could be interpreted as a sign of frustration or confusion. The audio and video cues, however, are unanimous in their indication of anger. Given the multimodal approach, which considers both audio and visual information, the weight of evidence points towards anger as the dominant emotion.</think><answer>Anger</answer>\n<think>The text conveys a sense of confusion or frustration, which might be a manifestation of the underlying anger detected in the audio and video cues. The audio cues suggest an angry mood, and the video cues reinforce this with descriptions of anger through facial expressions and intensity. The multimodal analysis suggests that the underlying emotion is anger, despite the text's indication of confusion or frustration.</think><answer>Anger</answer>\n<think>The text's sentiment of confusion or frustration is at odds with the audio and video cues, which both",
+    "emotion_prediction": "Anger",
+    "answer": "Anger",
+    "think": "The text indicates a sense of confusion or frustration, while the audio and video cues both point towards anger. The audio cues mention an angry and disgusted mood, and the video analysis describes a strong emotional state of anger with high intensity. The consistency between the audio and video cues suggests that the emotion being expressed is anger.",
+    "prompt": {
+      "system": "You are a multimodal emotion analysis expert participating in a two-model debate. Read the text, audio cues, and video cues carefully. Return exactly two XML-style tags with no extra text: <think>your reasoning</think><answer>final emotion label</answer>. The <answer> tag must contain only the final emotion label.",
+      "user": "Text:\nWhy cant you understand my feel?\n\nAudio emotion cues:\n{\"audio\":[\"angry mood\",\"disgusted mood\"]}\n\nVideo emotion cues:\n{\"video\":[\"anger: The person's furrowed brow and tense facial expression suggest a strong emotional state of anger.\",\"intensity: The clenched jaw and focused gaze indicate a high level of intensity or determination.\"]}"
+    },
+    "label": null,
+    "meta": null
+  }
+]

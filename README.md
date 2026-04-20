@@ -1,303 +1,378 @@
 # Emotion-Qwen
 
-本项目提供一个简洁的单文件多模态情感推理脚手架，满足以下流程：
+本项目用于多模态情感识别，输入为 `JSONL manifest`，每条样本包含文本、音频和视频路径；输出为结构化 `JSON` 结果，支持单模型推理和双模型辩论推理两种流程。
 
-1. 使用 `Qwen/Qwen2-Audio-7B-Instruct` 从音频中提取情感线索。
-2. 使用 `Qwen/Qwen2.5-VL-3B-Instruct` 从视频中提取情感线索。
-3. 将 `文本 + 音频JSON线索 + 视频JSON线索` 拼接成一个字符串。
-4. 使用 `bhadresh-savani/bert-base-uncased-emotion` 对拼接后的文本做情感分类。
-5. 将每条样本的完整输入与输出写入 `output.log`，方便后续继续做准确率等指标实验。
+当前实现已经完成以下能力：
 
-当前项目文件：
+1. 使用 `Qwen/Qwen2-Audio-7B-Instruct` 提取音频情感线索。
+2. 使用 `Qwen/Qwen2.5-VL-7B-Instruct` 提取视频情感线索。
+3. 使用 `deepseek-ai/DeepSeek-R1-Distill-Qwen-7B` 进行最终情感推理。
+4. 使用 `THUDM/glm-4-9b-chat` 与 DeepSeek 组成双模型辩论推理。
+5. 支持通用数据集 manifest 构建，以及 MELD 数据集下载、整理、推理和指标统计。
 
-- `multimodal_emotion_pipeline.py`：主程序，包含数据读取、三模型调用、结果落盘。
-- `README.md`：设计说明与运行方法。
+## 项目结构
 
-## 设计说明
+- `src/multimodal_emotion_pipeline.py`
+  单模型主流程：音频线索提取 + 视频线索提取 + DeepSeek 最终推理。
+- `src/debate.py`
+  双模型辩论流程：DeepSeek 与 GLM 独立推理，不一致时进入辩论轮次，直到达成一致或超过阈值。
+- `src/data_process.py`
+  数据整理脚本，支持：
+  - `generic`：将已有 `text/`、`audio/`、`video/` 目录整理为 manifest。
+  - `meld`：将 MELD 原始数据和标注整理为系统输入 JSONL。
+- `src/data_require.py`
+  数据下载脚本，当前已内置 MELD。
+- `data/`
+  输入样本、MELD 原始数据和整理后的 manifest。
+- `output/`
+  推理结果和评测指标输出目录。
 
-本实现默认采用 `JSONL` 作为输入清单格式，每行对应一个样本。这样后续你更换不同数据集时，只需要重新生成 manifest，而不需要重写主程序。
+## 当前模型配置
 
-每条样本至少包含三个模态：
+### 单模型流程
 
-- 文本：`text` 或 `text_path`
-- 音频：`audio_path`
-- 视频：`video_path`
+- 音频模型：`Qwen/Qwen2-Audio-7B-Instruct`
+- 视频模型：`Qwen/Qwen2.5-VL-7B-Instruct`
+- 最终推理模型：`deepseek-ai/DeepSeek-R1-Distill-Qwen-7B`
 
-主程序的执行逻辑为：
+### 双模型辩论流程
 
-1. 读取一条样本的文本、音频路径、视频路径。
-2. 使用 AM 读取音频并生成如下格式的 JSON：
+- 音频模型：`Qwen/Qwen2-Audio-7B-Instruct`
+- 视频模型：`Qwen/Qwen2.5-VL-7B-Instruct`
+- 辩论模型 1：`deepseek-ai/DeepSeek-R1-Distill-Qwen-7B`
+- 辩论模型 2：`THUDM/glm-4-9b-chat`
+
+默认情况下，辩论阶段最多进行 `3` 轮；如果超过阈值仍然未达成一致，则取 `GLM-4-9B-Chat` 的结果。
+
+## 推理输出格式
+
+最终推理模型必须返回严格的标签格式：
+
+```xml
+<think>推理过程</think><answer>最终情感</answer>
+```
+
+其中：
+
+- `<think>`：输出模型的推理思考过程。
+- `<answer>`：只输出最终情感标签。
+
+代码内部已经对模型输出做了兼容处理，能够尽量修复如下情况：
+
+- 返回中混入多余文本。
+- 缺失 `<think>` 起始标签但存在 `</think>`。
+- 返回 JSON 或代码块包裹的线索内容。
+
+## 输入 manifest 格式
+
+系统输入是 `JSONL`，每行一条样本。推荐字段如下：
 
 ```json
-{"audio":["cue1","cue2"]}
+{"id":"sample_0001","text":"I am very upset.","audio_path":"data/audio/sample_0001.wav","video_path":"data/video/sample_0001.mp4","label":"anger"}
+{"id":"sample_0002","text_path":"data/text/sample_0002.txt","audio_path":"data/audio/sample_0002.wav","video_path":"data/video/sample_0002.mp4","label":"joy"}
 ```
 
-3. 使用 VM 读取视频并生成如下格式的 JSON：
+字段说明：
 
-```json
-{"video":["cue1","cue2"]}
-```
+- `id`：样本编号，可选；不写时程序会自动生成。
+- `text` 或 `text_path`：文本内容或文本文件路径。
+- `audio_path`：音频路径。
+- `video_path`：视频路径。
+- `label`：真实标签，可选；如果提供，`debate.py` 可统计指标。
+- `meta`：额外元信息，可选，会原样写入结果文件。
 
-4. 将以下内容直接拼接为 BERT 输入：
+相对路径默认相对于 `manifest` 所在目录解析，也可以通过 `--data-root` 指定统一根目录。
 
-```text
-Prompt3
+## 输出结果格式
 
-文本内容
-{"audio":["cue1","cue2"]}
-{"video":["cue1","cue2"]}
-```
+注意：输入是 `JSONL`，输出结果文件是一个 `JSON 数组`，不是 JSONL。
 
-5. 输出 JSON 结果，并写入 `output.log`。
+### 单模型输出
 
-代码中已经预留了以下占位符，后续你可以直接修改：
-
-- `PROMPT1 = "Prompt1"`
-- `PROMPT2 = "Prompt2"`
-- `PROMPT3 = "Prompt3"`
-
-默认设备分配适配你的双卡环境：
-
-- 音频模型：`cuda:0`
-- 视频模型：`cuda:1`
-- BERT：`cuda:0`
-
-如果你后续想调整，只需要修改命令行参数：
-
-- `--audio-device`
-- `--video-device`
-- `--bert-device`
-
-## 输入数据格式
-
-推荐在项目下准备一个 manifest 文件，例如 `data/samples.jsonl`。
-
-示例 1：文本直接写在 manifest 中
-
-```json
-{"id":"sample_0001","text":"I am feeling very nervous today.","audio_path":"data/audio/sample_0001.wav","video_path":"data/video/sample_0001.mp4","label":"fear"}
-{"id":"sample_0002","text":"I finally solved the problem.","audio_path":"data/audio/sample_0002.wav","video_path":"data/video/sample_0002.mp4","label":"joy"}
-```
-
-示例 2：文本单独存成文件
-
-```json
-{"id":"sample_0003","text_path":"data/text/sample_0003.txt","audio_path":"data/audio/sample_0003.wav","video_path":"data/video/sample_0003.mp4","label":"sadness"}
-```
-
-说明：
-
-- `id` 可选，不写时程序会自动生成。
-- `label` 可选，当前不会计算准确率，但会原样写入输出，方便你后续做评测。
-- 相对路径默认相对于 `manifest` 所在目录解析，也可以通过 `--data-root` 指定新的根目录。
-
-## 运行环境
-
-你的目标环境是 Ubuntu 22.04.5 LTS + 2 x RTX 4090 24G。本项目代码就是按这个场景写的。
-
-建议使用 Python 3.10 或 3.11。
-
-一个可参考的安装流程如下：
-
-```bash
-conda create -n emotion-qwen python=3.10 -y
-conda activate emotion-qwen
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install "git+https://github.com/huggingface/transformers" accelerate librosa sentencepiece decord bitsandbytes av
-```
-
-说明：
-
-- 视频模态当前使用 `Qwen/Qwen2.5-VL-3B-Instruct`，通过 `transformers` 官方接口处理本地视频。
-- 如果你使用其他 CUDA 版本，请把 PyTorch 安装命令替换成与你服务器匹配的版本。
-- 首次运行会自动从 Hugging Face 下载模型，确保服务器能访问相关模型仓库。
-
-## 运行方法
-
-最常用的运行命令：
-
-```bash
-python multimodal_emotion_pipeline.py \
-  --manifest data/samples.jsonl \
-  --output output.log \
-  --audio-device cuda:0 \
-  --video-device cuda:1 \
-  --bert-device cuda:0 \
-  --qwen-dtype bfloat16 \
-  --video-fps 1.0 \
-  --video-max-pixels 802816
-```
-
-如果你希望进一步降低视频模型的显存占用，可以打开量化：
-
-8-bit 量化：
-
-```bash
-python multimodal_emotion_pipeline.py \
-  --manifest data/samples.jsonl \
-  --output output.log \
-  --audio-device cuda:0 \
-  --video-device cuda:1 \
-  --bert-device cuda:0 \
-  --qwen-dtype float16 \
-  --video-quantization 8bit \
-  --video-fps 1.0 \
-  --video-max-pixels 802816
-```
-
-4-bit 量化：
-
-```bash
-python multimodal_emotion_pipeline.py \
-  --manifest data/samples.jsonl \
-  --output output.log \
-  --audio-device cuda:0 \
-  --video-device cuda:1 \
-  --bert-device cuda:0 \
-  --qwen-dtype float16 \
-  --video-quantization 4bit \
-  --video-fps 1.0 \
-  --video-max-pixels 802816
-```
-
-如果 8-bit 后显存仍然紧张，可以进一步给 VL 开 CPU offload：
-
-```bash
-python multimodal_emotion_pipeline.py \
-  --manifest data/samples.jsonl \
-  --output output.log \
-  --audio-device cuda:0 \
-  --video-device cuda:1 \
-  --bert-device cuda:0 \
-  --qwen-dtype float16 \
-  --video-quantization 8bit \
-  --video-cpu-offload \
-  --video-gpu-memory-limit-gib 20 \
-  --video-cpu-memory-limit-gib 64 \
-  --video-fps 1.0 \
-  --video-max-pixels 802816
-```
-
-如果你的音频、视频、文本路径都希望相对于某个统一目录解析，可以增加：
-
-```bash
-python multimodal_emotion_pipeline.py \
-  --manifest data/samples.jsonl \
-  --data-root /path/to/dataset_root \
-  --output output.log
-```
-
-如果你只想先抽几条样本调试：
-
-```bash
-python multimodal_emotion_pipeline.py \
-  --manifest data/samples.jsonl \
-  --output output.log \
-  --limit 5
-```
-
-常用参数：
-
-- `--manifest`：输入样本清单，JSONL 格式。
-- `--output`：输出日志文件，默认是 `output.log`。
-- `--data-root`：相对路径解析根目录。
-- `--audio-device` / `--video-device` / `--bert-device`：三个模型的运行设备。
-- `--audio-max-new-tokens`：音频线索提取最大生成长度。
-- `--video-max-new-tokens`：视频线索提取最大生成长度。
-- `--video-fps`：视频抽帧频率。
-- `--video-attn-implementation`：视频模型注意力实现，默认自动优先使用 `flash_attention_2`。
-- `--video-quantization`：VL 量化模式，可选 `none`、`8bit`、`4bit`。
-- `--video-cpu-offload`：仅对 VL 的 8-bit 量化生效，用 CPU 换更低的 GPU 显存占用。
-- `--video-gpu-memory-limit-gib` / `--video-cpu-memory-limit-gib`：配合 CPU offload 使用。
-- `--video-min-pixels` / `--video-max-pixels`：视频视觉 token 范围，减小上限可以显著节省显存。
-- `--video-use-cache`：开启视频生成 KV cache，默认关闭以节省显存。
-- `--bert-max-length`：BERT 输入最大长度，默认 512。
-- `--limit`：只处理前 N 条样本，便于调试。
-- `--append-output`：追加写入 `output.log`，否则默认覆盖。
-
-## 输出说明
-
-程序会把每条样本的结果逐行写入 `output.log`。`output.log` 虽然扩展名是 `.log`，但内容实际是 JSON Lines，方便后续直接读取统计。
-
-每行会包含如下信息：
+`src/multimodal_emotion_pipeline.py` 默认输出到 `output/result.json`，每条记录包含：
 
 ```json
 {
   "id": "sample_0001",
-  "text": "I am feeling very nervous today.",
-  "audio_path": "/abs/path/to/sample_0001.wav",
-  "video_path": "/abs/path/to/sample_0001.mp4",
-  "audio_cues": {"audio":["cue1","cue2"]},
-  "video_cues": {"video":["cue1","cue2"]},
-  "answer": "fear",
-  "think": "文本提供了基础情绪语义信息，音频线索显示语速较慢且能量偏低，视频线索显示表情紧绷且目光回避，综合判断该样本最可能的情感标签为 fear。"
+  "text": "Why cant you understand my feel?",
+  "audio_path": "/abs/path/audio.mp3",
+  "video_path": "/abs/path/video.mp4",
+  "emotion_cues": {
+    "text": "Why cant you understand my feel?",
+    "audio": ["angry mood", "disgusted mood"],
+    "video": ["anger", "intensity"]
+  },
+  "audio_cues": {"audio": ["angry mood", "disgusted mood"]},
+  "video_cues": {"video": ["anger", "intensity"]},
+  "audio_raw_response": "...",
+  "video_raw_response": "...",
+  "model_output": "<think>...</think><answer>anger</answer>",
+  "raw_model_output": "...",
+  "emotion_prediction": "anger",
+  "answer": "anger",
+  "think": "...",
+  "prompt": {},
+  "label": "anger",
+  "meta": {}
 }
 ```
 
-按当前要求，输出结果只保留以下字段：
+### 双模型辩论输出
 
-- `id`
-- `text`
-- `audio_path`
-- `video_path`
-- `audio_cues`
-- `video_cues`
-- `answer`
-- `think`
+`src/debate.py` 默认输出到 `output/result_debate.json`，在单模型字段基础上额外包含：
 
-其中：
+- `debate_max_rounds`
+- `debate_history`
+- `termination_reason`
+- `consensus_reached`
+- `consensus_round`
+- `selected_model`
 
-- `answer`：BERT 阶段输出的最终情感标签。
-- `think`：围绕文本、音频线索、视频线索整理出的解释性文字。
+这样可以回溯每一轮辩论中两个模型的推理过程与最终裁决来源。
 
-如果某条样本处理失败，程序不会直接中断，而是仍然输出同样结构的 JSON，只是 `answer` 为空，`think` 中写入失败原因，便于你继续跑完整个数据集。
+## 环境准备
 
-## 后续修改建议
+建议环境：Ubuntu 22.04+，Python 3.10，NVIDIA GPU。
 
-如果你后续要适配不同数据集，通常只需要改下面几个位置：
+推荐安装方式：
 
-1. 修改 `data/samples.jsonl` 的生成方式，不必改主流程。
-2. 直接在 `multimodal_emotion_pipeline.py` 顶部替换 `PROMPT1`、`PROMPT2`、`PROMPT3`。
-3. 如果你未来想把最终推理模型从 BERT 换成其他模型，只需要重点改 `classify_emotion()`。
-4. 如果你后续要增加准确率、F1 等指标，可以在读取 `output.log` 后单独写评测脚本，也可以在当前脚本基础上追加统计逻辑。
+```bash
+conda create -n emotion-qwen python=3.10 -y
+conda activate emotion-qwen
+pip install -r requests.txt
+pip install tiktoken
+```
 
-## 一个需要特别注意的点
+`requests.txt` 当前包含的核心依赖有：
 
-`bhadresh-savani/bert-base-uncased-emotion` 是英文 `uncased` 情感分类模型。如果你的数据集文本是中文，或者你让 AM / VM 输出中文线索，那么最终 BERT 分类效果很可能不理想。
+- `torch==2.5.1`
+- `transformers==4.50.0`
+- `accelerate==1.2.1`
+- `sentencepiece==0.2.0`
+- `librosa==0.10.2.post1`
+- `decord==0.6.0`
+- `bitsandbytes==0.45.2`
+- `av==12.0.0`
 
-也就是说，当前代码已经严格按你的模型要求搭好了流程，但从实验设计角度看：
+说明：
 
-- 如果你的文本主要是英文，这个组合更自然。
-- 如果你的文本主要是中文，建议你后续重点关注 `PROMPT1`、`PROMPT2`、`PROMPT3` 的语言，以及是否需要更换最终分类模型。
+- `GLM-4-9B-Chat` 依赖 `tiktoken`，需要额外安装。
+- MELD 数据整理与视频抽帧依赖 `av`。
+- 如果要使用 4bit/8bit 量化，需保证 `bitsandbytes` 可用。
 
-## 说明
+## 模型缓存路径
 
-当前版本没有实现准确率、F1、召回率等评测指标，这部分暂时留空，但输入输出结构已经整理好，后续可以很方便继续扩展。
+在运行前建议设置缓存目录：
 
-补充说明：
+```bash
+export HF_HOME=/rczhang/rczhang/zhangrch/code2/hf_cache
+export TRANSFORMERS_CACHE=/rczhang/rczhang/zhangrch/code2/hf_cache
+export TORCH_HOME=/rczhang/rczhang/zhangrch/code2/torch_cache
+```
 
-- 当前脚本本身就是逐条样本处理，因此对视频模型来说有效 batch size 已经是 `1`。
-- 如果显存仍然紧张，优先尝试 `--video-quantization 8bit`，其次再尝试 `--video-quantization 4bit`。
-- 量化主要降低的是视频模型权重占用；如果视频过长或抽帧过密，仍然可能因为激活显存峰值而 OOM。
-- 对长视频来说，通常先把 `--video-fps` 调到 `0.5` 或 `0.25`，再考虑减小 `--video-max-pixels`。
-# 更新git
-git pull # 如果远程仓库没有变化可以不执行
-git add .
-git commit -m "update"
-git push
-# 版本回滚
-git log --oneline --graph
-git reset --hard commitID
-git push -f
-# 常见错误
-## 服务器上执行主程序时，无法正常链接huggingface仓库
-执行 export HF_ENDPOINT=https://hf-mirror.com 切换国内镜像源
-如果上述命令仍然不行执行
-unset HF_ENDPOINT
-source /etc/network_turbo
-开启学术加速
-## AutoDL云平台加载模型系统盘不足的问题
-模型占用系统盘空间很大，导致系统盘空间不够
-终端中执行：
-export HF_HOME=/root/autodl-tmp/cache/
-将模型的缓存保存到数据盘。
+## 运行方式
+
+以下命令默认在项目根目录 `26EmotionDetect/` 下执行。
+
+### 单模型推理
+
+```bash
+python src/multimodal_emotion_pipeline.py \
+  --manifest data/samples.jsonl \
+  --output output/result.json \
+  --audio-device cuda:0 \
+  --video-device cuda:1 \
+  --reasoner-device cuda:0 \
+  --qwen-dtype bfloat16 \
+  --video-fps 0.25 \
+  --video-max-pixels 200704
+```
+
+常用参数：
+
+- `--manifest`：输入样本清单。
+- `--output`：输出结果文件，默认 `output/result.json`。
+- `--data-root`：相对路径统一解析根目录。
+- `--audio-device` / `--video-device` / `--reasoner-device`：模型所在设备。
+- `--audio-max-new-tokens`：音频线索生成长度。
+- `--video-max-new-tokens`：视频线索生成长度。
+- `--reasoner-max-new-tokens`：最终推理生成长度。
+- `--video-fps`：视频抽帧频率，默认 `0.25`。
+- `--video-min-pixels` / `--video-max-pixels`：控制视频视觉 token 数量。
+- `--video-quantization`：`none`、`8bit`、`4bit`。
+- `--video-cpu-offload`：8bit 模式下启用 CPU offload。
+- `--append-output`：追加到已有输出结果。
+- `--limit`：只处理前 N 条样本，方便调试。
+
+### 双模型辩论推理
+
+```bash
+python src/debate.py \
+  --manifest data/samples.jsonl \
+  --output output/result_debate.json \
+  --audio-device cuda:0 \
+  --video-device cuda:1 \
+  --reasoner-device cuda:2 \
+  --debate-max-rounds 3
+```
+
+辩论流程如下：
+
+1. 先用音频模型和视频模型分别抽取情感线索。
+2. 将线索分别交给 DeepSeek 和 GLM 独立推理。
+3. 如果两个模型 `<answer>` 一致，则直接终止。
+4. 如果不一致，则把双方前一轮的 `<think>` 与 `<answer>` 一并作为上下文继续推理。
+5. 如果达到最大轮次后仍不一致，则选择 `GLM-4-9B-Chat` 的结果。
+
+额外参数：
+
+- `--deepseek-model-id`：DeepSeek 模型 ID。
+- `--glm-model-id`：GLM 模型 ID。
+- `--debate-max-rounds`：最大辩论轮次，默认 `3`。
+- `--metrics-output`：输出指标统计文本。
+
+实现说明：
+
+- 当前辩论模型按顺序在同一推理设备上加载，以降低显存压力。
+- 输出中保留完整 `debate_history`，方便后续分析一致性与分歧来源。
+
+## 数据整理
+
+### 通用数据集整理
+
+如果你已有如下目录结构：
+
+```text
+dataset_root/
+  text/
+  audio/
+  video/
+```
+
+可运行：
+
+```bash
+python src/data_process.py generic \
+  --dataset-root /path/to/dataset_root \
+  --output-root /path/to/output_dir
+```
+
+生成：
+
+- `output_dir/samples.jsonl`
+- `output_dir/samples_data_process_warnings.log`
+
+兼容说明：
+
+- `--DESFOLDER` 和 `--OUTFOLDER` 仍然可用，便于兼容旧命令。
+- `generic` 模式支持递归扫描子目录，并按相对路径匹配文本、音频、视频文件。
+
+### MELD 数据下载
+
+使用内置脚本下载 MELD：
+
+```bash
+python src/data_require.py --dataset meld --data-root data
+```
+
+当前下载内容包括：
+
+- `data/MELD/annotations/train_sent_emo.csv`
+- `data/MELD/annotations/dev_sent_emo.csv`
+- `data/MELD/annotations/test_sent_emo.csv`
+- `data/MELD/raw/original/MELD.Raw.tar.gz`
+- `data/MELD/raw/unpacked/`
+- `data/MELD/media/video/`
+
+### MELD 数据整理
+
+将 MELD 整理成系统输入 manifest：
+
+```bash
+python src/data_process.py meld \
+  --dataset-root data/MELD \
+  --output-jsonl data/meld.jsonl
+```
+
+如需提前提取 wav 音频，可增加：
+
+```bash
+python src/data_process.py meld \
+  --dataset-root data/MELD \
+  --output-jsonl data/meld.jsonl \
+  --extract-audio
+```
+
+说明：
+
+- 现在默认会将音频抽取为独立 `wav`，并写入 `data/MELD/media/audio/<split>/`。
+- 标准化后的视频会放到 `data/MELD/media/video/<split>/`，文本会放到 `data/MELD/prepared/text/<split>/`。
+- 如果你确实希望 `audio_path` 直接指向视频文件，可显式指定 `--audio-source video`。
+- 脚本会自动查找以下任一原始压缩包位置：
+  - `data/MELD/raw/original/MELD.Raw.tar.gz`
+  - `data/MELD/raw/MELD.Raw.tar.gz`
+  - `data/MELD/downloads/MELD.Raw.tar.gz`
+  - `data/MELD/MELD.Raw.tar.gz`
+- 如果部分样本缺少视频，会写入 warning 文件而不是直接中断。
+
+## MELD 评测示例
+
+先处理前 200 条样本：
+
+```bash
+python src/debate.py \
+  --manifest data/meld.jsonl \
+  --output output/meld_result.json \
+  --metrics-output output/meld_metric.txt \
+  --audio-device cuda:0 \
+  --video-device cuda:1 \
+  --reasoner-device cuda:2 \
+  --limit 200
+```
+
+会生成：
+
+- `output/meld_result.json`
+- `output/meld_metric.txt`
+
+当前实现支持以下指标：
+
+- Accuracy
+- Weighted Precision
+- Weighted Recall
+- Weighted F1
+- Macro Precision
+- Macro Recall
+- Macro F1
+- Per-label Precision / Recall / F1 / Support
+
+MELD 相关工作中，通常以 `Accuracy` 和 `Weighted F1` 作为主指标。代码中的指标说明参考了以下文献：
+
+- Frontiers 2023 GCF2-Net
+  https://www.frontiersin.org/articles/10.3389/fnins.2023.1183132/full
+- Adaptive weighting in a transformer framework for multimodal emotion recognition
+  https://www.sciencedirect.com/science/article/pii/S0167639325001475
+
+## 稳定性与兼容性说明
+
+当前代码已经处理了几个常见问题：
+
+- 短视频保护：对于非常短的视频，系统会确保至少采样 1 帧，避免 `video_fps` 较低时出现 0 帧导致的错误。
+- 视频显存控制：支持降低 `video_max_pixels`，以及使用 4bit/8bit 量化和 CPU offload。
+- 断点续跑：
+  - `debate.py --append-output` 会跳过已经存在于输出文件中的样本。
+  - 适合长时间跑大数据集时中断后继续。
+- 多数据集兼容：
+  - 主流程读取的是统一 manifest，不依赖具体数据集名称。
+  - 只要能通过 `data_process.py` 或自定义脚本生成相同字段的 JSONL，就能复用现有推理与评测代码。
+
+## 后续扩展建议
+
+如果你后续需要接入其他数据集，通常只需做下面几件事：
+
+1. 下载并放置数据到 `data/` 下。
+2. 用 `src/data_process.py` 新增一个对应模式，或单独生成新的 manifest。
+3. 继续复用 `src/multimodal_emotion_pipeline.py` 或 `src/debate.py`。
+4. 如果新数据集标签空间不同，仍然可以直接统计 Accuracy 和 P/R/F1。
+
+如果后续继续扩展更多数据集，建议始终把“数据整理”和“推理主流程”分离，保持 manifest 作为统一接口。

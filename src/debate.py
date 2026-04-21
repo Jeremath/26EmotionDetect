@@ -36,6 +36,7 @@ from multimodal_emotion_pipeline import (
     Sample,
     build_video_max_memory,
     build_video_quantization_config,
+    clamp_score,
     device_map_value,
     empty_cuda_cache,
     estimate_video_num_frames,
@@ -44,10 +45,13 @@ from multimodal_emotion_pipeline import (
     load_samples,
     move_batch_to_device,
     normalize_cue_json,
+    normalize_bool,
     normalize_reasoner_output,
+    normalize_text_assessment,
     path_to_uri,
     read_existing_results,
     resolve_video_attn_implementation,
+    TEXT_GATE_PROMPT,
     torch_dtype_from_name,
     write_results,
 )
@@ -55,19 +59,25 @@ from multimodal_emotion_pipeline import (
 
 INITIAL_SYSTEM_PROMPT = (
     "You are a multimodal emotion analysis expert participating in a two-model debate. "
-    "Read the text, audio cues, and video cues carefully. "
+    "Text is the primary evidence. Audio and video cues are auxiliary evidence and may be noisy, generic, or misleading. "
+    "Follow the provided gate decisions strictly. If text emotion is already clear, do not let weak auxiliary cues override it. Ignore any modality marked as excluded. "
+    "Read the text, text-first assessment, and any included auxiliary cues carefully. "
     "Return exactly two XML-style tags with no extra text: "
     "<think>your reasoning</think><answer>final emotion label</answer>. "
     "The <answer> tag must contain only the final emotion label."
+    "Please choose one of the following seven labels as your result: neutral, joy, sadness, anger, fear, disgust, and surprise. If there is no obvious sentiment bias, please use neutral as your final result."
 )
 
 DEBATE_SYSTEM_PROMPT = (
     "You are a multimodal emotion analysis expert participating in a two-model debate. "
+    "Text is the primary evidence. Audio and video cues are auxiliary evidence and may be noisy, generic, or misleading. "
+    "Follow the provided gate decisions strictly. If text emotion is already clear, do not let weak auxiliary cues override it. Ignore any modality marked as excluded. "
     "Review the evidence, your previous reasoning, and the other model's reasoning. "
     "If the other model is more convincing, revise your answer. If not, defend your answer. "
     "Return exactly two XML-style tags with no extra text: "
     "<think>your reasoning</think><answer>final emotion label</answer>. "
     "The <answer> tag must contain only the final emotion label."
+    "Please choose one of the following seven labels as your result: neutral, joy, sadness, anger, fear, disgust, and surprise. If there is no obvious sentiment bias, please use neutral as your final result."
 )
 
 
@@ -96,6 +106,10 @@ class DebateConfig:
     video_use_cache: bool
     video_min_pixels: Optional[int]
     video_max_pixels: Optional[int]
+    text_gate_confidence_threshold: float
+    text_gate_clarity_threshold: float
+    modality_gate_threshold: float
+    strong_modality_gate_threshold: float
     debate_max_rounds: int
     metrics_output: Optional[Path]
     limit: Optional[int]
@@ -235,6 +249,30 @@ def parse_args() -> DebateConfig:
         help="Maximum visual tokens for the video processor.",
     )
     parser.add_argument(
+        "--text-gate-confidence-threshold",
+        type=float,
+        default=0.80,
+        help="If text confidence is above this threshold, treat text as strong primary evidence.",
+    )
+    parser.add_argument(
+        "--text-gate-clarity-threshold",
+        type=float,
+        default=0.72,
+        help="If text clarity is above this threshold, treat text as strong primary evidence.",
+    )
+    parser.add_argument(
+        "--modality-gate-threshold",
+        type=float,
+        default=0.22,
+        help="Minimum modality gate score required to include an auxiliary modality when text is not clearly decisive.",
+    )
+    parser.add_argument(
+        "--strong-modality-gate-threshold",
+        type=float,
+        default=0.45,
+        help="Minimum modality gate score required to include an auxiliary modality when text is already clear.",
+    )
+    parser.add_argument(
         "--debate-max-rounds",
         type=int,
         default=3,
@@ -286,6 +324,10 @@ def parse_args() -> DebateConfig:
         video_use_cache=args.video_use_cache,
         video_min_pixels=args.video_min_pixels,
         video_max_pixels=args.video_max_pixels,
+        text_gate_confidence_threshold=args.text_gate_confidence_threshold,
+        text_gate_clarity_threshold=args.text_gate_clarity_threshold,
+        modality_gate_threshold=args.modality_gate_threshold,
+        strong_modality_gate_threshold=args.strong_modality_gate_threshold,
         debate_max_rounds=args.debate_max_rounds,
         metrics_output=args.metrics_output.resolve() if args.metrics_output else None,
         limit=args.limit,
@@ -672,7 +714,13 @@ class SequentialDebateReasoner:
         except ValueError:
             return f"{system_prompt}\n\n{user_prompt}\n\n"
 
-    def infer(self, spec: ModelSpec, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+    def generate_text(
+        self,
+        spec: ModelSpec,
+        system_prompt: str,
+        user_prompt: str,
+        max_new_tokens: Optional[int] = None,
+    ) -> str:
         self.ensure_model_loaded(spec)
         prompt_text = self.build_prompt_text(system_prompt, user_prompt)
         model_inputs = self.tokenizer(
@@ -685,18 +733,21 @@ class SequentialDebateReasoner:
         with torch.inference_mode():
             generated_ids = self.model.generate(
                 **model_inputs,
-                max_new_tokens=self.config.reasoner_max_new_tokens,
+                max_new_tokens=max_new_tokens or self.config.reasoner_max_new_tokens,
                 do_sample=False,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
             )
 
         trimmed_ids = generated_ids[:, model_inputs["input_ids"].shape[1] :]
-        response = self.tokenizer.batch_decode(
+        return self.tokenizer.batch_decode(
             trimmed_ids,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )[0].strip()
+
+    def infer(self, spec: ModelSpec, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+        response = self.generate_text(spec, system_prompt, user_prompt)
         normalized = normalize_reasoner_output(response)
         return {
             "model_name": spec.name,
@@ -709,6 +760,18 @@ class SequentialDebateReasoner:
             "answer": normalized["answer"],
             "normalized_answer": canonicalize_answer(normalized["answer"]),
         }
+
+    def infer_text_assessment(self, spec: ModelSpec, text: str) -> Dict[str, Any]:
+        response = self.generate_text(
+            spec=spec,
+            system_prompt=TEXT_GATE_PROMPT,
+            user_prompt=text,
+            max_new_tokens=128,
+        )
+        assessment = normalize_text_assessment(response)
+        assessment["model_name"] = spec.name
+        assessment["model_id"] = spec.model_id
+        return assessment
 
 
 class DebatePipeline:
@@ -730,17 +793,112 @@ class DebatePipeline:
     def build_initial_prompt(
         self,
         sample: Sample,
+        text_assessment: Dict[str, Any],
         audio_json: Dict[str, Any],
         video_json: Dict[str, Any],
+        gate_report: Dict[str, Any],
     ) -> str:
+        audio_section = (
+            json_dumps(audio_json)
+            if gate_report["audio"]["use"]
+            else f"OMITTED. {gate_report['audio']['reason']}"
+        )
+        video_section = (
+            json_dumps(video_json)
+            if gate_report["video"]["use"]
+            else f"OMITTED. {gate_report['video']['reason']}"
+        )
         return (
+            "Fusion policy:\n"
+            f'{json_dumps({"text_primary": gate_report["text_primary"], "audio_gate": gate_report["audio"], "video_gate": gate_report["video"]})}\n\n'
+            "Text-first assessment:\n"
+            f"{json_dumps(text_assessment)}\n\n"
             "Text:\n"
             f"{sample.text}\n\n"
-            "Audio emotion cues:\n"
-            f"{json_dumps(audio_json)}\n\n"
-            "Video emotion cues:\n"
-            f"{json_dumps(video_json)}"
+            "Audio auxiliary evidence:\n"
+            f"{audio_section}\n\n"
+            "Video auxiliary evidence:\n"
+            f"{video_section}"
         )
+
+    def assess_text_emotion(self, sample: Sample) -> Dict[str, Any]:
+        text = sample.text.strip()
+        if not text:
+            return {
+                "label": "",
+                "confidence": 0.0,
+                "clarity": 0.0,
+                "reason": "No text was provided for text-first assessment.",
+                "raw_response": "",
+                "model_name": self.deepseek_spec.name,
+                "model_id": self.deepseek_spec.model_id,
+            }
+        return self.reasoner.infer_text_assessment(self.deepseek_spec, text)
+
+    def compute_modality_gate(
+        self,
+        text_assessment: Dict[str, Any],
+        audio_json: Dict[str, Any],
+        video_json: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        text_primary = (
+            bool(text_assessment.get("label"))
+            and float(text_assessment.get("confidence", 0.0)) >= self.config.text_gate_confidence_threshold
+            and float(text_assessment.get("clarity", 0.0)) >= self.config.text_gate_clarity_threshold
+        )
+
+        def gate_one(modality_name: str, modality_json: Dict[str, Any]) -> Dict[str, Any]:
+            quality = clamp_score(modality_json.get("quality"), default=0.10)
+            confidence = clamp_score(modality_json.get("confidence"), default=0.10)
+            ambiguity = clamp_score(modality_json.get("ambiguity"), default=0.95)
+            signal_strength = clamp_score(modality_json.get("signal_strength"), default=0.05)
+            recommended_use = normalize_bool(modality_json.get("recommended_use"), default=False)
+            gate_score = quality * confidence * (1.0 - ambiguity) * (0.5 + 0.5 * signal_strength)
+            threshold = (
+                self.config.strong_modality_gate_threshold
+                if text_primary
+                else self.config.modality_gate_threshold
+            )
+            use_modality = bool(modality_json.get(modality_name)) and gate_score >= threshold and (
+                recommended_use or gate_score >= threshold + 0.08
+            )
+            if not modality_json.get(modality_name):
+                reason = f"{modality_name} excluded because no usable cues were extracted."
+            elif text_primary and gate_score < threshold:
+                reason = (
+                    f"{modality_name} excluded because text evidence is already clear and the modality gate "
+                    f"score {gate_score:.3f} is below the strong threshold {threshold:.2f}."
+                )
+            elif gate_score < threshold:
+                reason = (
+                    f"{modality_name} excluded because the modality gate score {gate_score:.3f} is below "
+                    f"the threshold {threshold:.2f}."
+                )
+            elif not recommended_use and gate_score < threshold + 0.08:
+                reason = f"{modality_name} excluded because the extractor marked it as weak or ambiguous."
+            else:
+                reason = f"{modality_name} included with gate score {gate_score:.3f}."
+            return {
+                "use": use_modality,
+                "gate_score": gate_score,
+                "threshold": threshold,
+                "quality": quality,
+                "confidence": confidence,
+                "ambiguity": ambiguity,
+                "signal_strength": signal_strength,
+                "recommended_use": recommended_use,
+                "reason": reason,
+            }
+
+        audio_gate = gate_one("audio", audio_json)
+        video_gate = gate_one("video", video_json)
+        return {
+            "text_primary": text_primary,
+            "text_confidence": float(text_assessment.get("confidence", 0.0)),
+            "text_clarity": float(text_assessment.get("clarity", 0.0)),
+            "audio": audio_gate,
+            "video": video_gate,
+        }
 
     def build_debate_prompt(
         self,
@@ -760,8 +918,15 @@ class DebatePipeline:
             "You may keep or revise your answer, but you must output only the required tags."
         )
 
-    def debate(self, sample: Sample, audio_json: Dict[str, Any], video_json: Dict[str, Any]) -> Dict[str, Any]:
-        base_prompt = self.build_initial_prompt(sample, audio_json, video_json)
+    def debate(
+        self,
+        sample: Sample,
+        text_assessment: Dict[str, Any],
+        audio_json: Dict[str, Any],
+        video_json: Dict[str, Any],
+        gate_report: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        base_prompt = self.build_initial_prompt(sample, text_assessment, audio_json, video_json, gate_report)
         rounds: List[Dict[str, Any]] = []
 
         deepseek_result = self.reasoner.infer(self.deepseek_spec, INITIAL_SYSTEM_PROMPT, base_prompt)
@@ -843,18 +1008,39 @@ class DebatePipeline:
     def process_sample(self, sample: Sample) -> Dict[str, Any]:
         audio_result = self.cue_extractor.extract_audio_cues(sample)
         video_result = self.cue_extractor.extract_video_cues(sample)
-        debate_result = self.debate(sample, audio_result["json"], video_result["json"])
+        text_assessment = self.assess_text_emotion(sample)
+        gate_report = self.compute_modality_gate(
+            text_assessment=text_assessment,
+            audio_json=audio_result["json"],
+            video_json=video_result["json"],
+        )
+        debate_result = self.debate(
+            sample,
+            text_assessment,
+            audio_result["json"],
+            video_result["json"],
+            gate_report,
+        )
         final_result = debate_result["final_result"]
+        gated_audio = audio_result["json"] if gate_report["audio"]["use"] else {"audio": []}
+        gated_video = video_result["json"] if gate_report["video"]["use"] else {"video": []}
 
         return {
             "id": sample.sample_id,
             "text": sample.text,
             "audio_path": str(sample.audio_path),
             "video_path": str(sample.video_path),
+            "text_assessment": text_assessment,
+            "modality_gate": gate_report,
             "emotion_cues": {
                 "text": sample.text,
                 "audio": audio_result["json"].get("audio", []),
                 "video": video_result["json"].get("video", []),
+            },
+            "gated_emotion_cues": {
+                "text": sample.text,
+                "audio": gated_audio.get("audio", []),
+                "video": gated_video.get("video", []),
             },
             "audio_cues": audio_result["json"],
             "video_cues": video_result["json"],
@@ -913,7 +1099,26 @@ def main() -> None:
                 "text": sample.text,
                 "audio_path": str(sample.audio_path),
                 "video_path": str(sample.video_path),
+                "text_assessment": {
+                    "label": "",
+                    "confidence": 0.0,
+                    "clarity": 0.0,
+                    "reason": "Unavailable because sample processing failed.",
+                    "raw_response": "",
+                },
+                "modality_gate": {
+                    "text_primary": False,
+                    "text_confidence": 0.0,
+                    "text_clarity": 0.0,
+                    "audio": {"use": False, "gate_score": 0.0, "threshold": 0.0, "quality": 0.0, "confidence": 0.0, "ambiguity": 1.0, "signal_strength": 0.0, "recommended_use": False, "reason": "Unavailable because sample processing failed."},
+                    "video": {"use": False, "gate_score": 0.0, "threshold": 0.0, "quality": 0.0, "confidence": 0.0, "ambiguity": 1.0, "signal_strength": 0.0, "recommended_use": False, "reason": "Unavailable because sample processing failed."},
+                },
                 "emotion_cues": {
+                    "text": sample.text,
+                    "audio": [],
+                    "video": [],
+                },
+                "gated_emotion_cues": {
                     "text": sample.text,
                     "audio": [],
                     "video": [],

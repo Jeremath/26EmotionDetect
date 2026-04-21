@@ -35,6 +35,9 @@ import wave
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
+import librosa
+import numpy as np
+
 
 TEXT_EXTENSIONS = {".txt", ".text"}
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus"}
@@ -394,27 +397,50 @@ def extract_audio_to_wav(video_path: Path, audio_path: Path, overwrite: bool = F
         raise RuntimeError(f"No audio stream found in {video_path}")
 
     audio_stream = audio_streams[0]
-    resampler = av.audio.resampler.AudioResampler(
-        format="s16",
-        layout="mono",
-        rate=16000,
-    )
+    chunks: List[np.ndarray] = []
+    source_rate: Optional[int] = None
+
+    for packet in container.demux(audio_stream):
+        for frame in packet.decode():
+            array = frame.to_ndarray()
+            waveform = np.asarray(array)
+            if waveform.ndim == 2:
+                waveform = waveform.mean(axis=0)
+            else:
+                waveform = waveform.reshape(-1)
+
+            if np.issubdtype(waveform.dtype, np.integer):
+                scale = max(abs(np.iinfo(waveform.dtype).min), np.iinfo(waveform.dtype).max)
+                waveform = waveform.astype(np.float32) / float(scale)
+            else:
+                waveform = waveform.astype(np.float32)
+
+            if not waveform.size:
+                continue
+
+            chunks.append(waveform)
+            if frame.sample_rate:
+                source_rate = int(frame.sample_rate)
+
+    container.close()
+
+    if not chunks:
+        raise RuntimeError(f"No decoded audio samples found in {video_path}")
+
+    waveform = np.concatenate(chunks)
+    if source_rate is None or source_rate <= 0:
+        source_rate = int(getattr(audio_stream, "rate", 16000) or 16000)
+    if source_rate != 16000:
+        waveform = librosa.resample(waveform, orig_sr=source_rate, target_sr=16000)
+
+    waveform = np.clip(waveform, -1.0, 1.0)
+    pcm16 = (waveform * 32767.0).astype(np.int16)
 
     with wave.open(str(audio_path), "wb") as wav_handle:
         wav_handle.setnchannels(1)
         wav_handle.setsampwidth(2)
         wav_handle.setframerate(16000)
-
-        for packet in container.demux(audio_stream):
-            for frame in packet.decode():
-                resampled = resampler.resample(frame)
-                if resampled is None:
-                    continue
-                frames = resampled if isinstance(resampled, list) else [resampled]
-                for out_frame in frames:
-                    array = out_frame.to_ndarray()
-                    wav_handle.writeframes(array.T.astype("int16").tobytes())
-    container.close()
+        wav_handle.writeframes(pcm16.tobytes())
 
 
 def build_meld_records(

@@ -359,6 +359,18 @@ def build_failure_result(sample: Sample, spec: AblationSpec, error: str) -> Dict
     }
 
 
+def with_empty_modality(modality_name: str) -> Dict[str, Any]:
+    return {
+        modality_name: [],
+        "quality": 0.0,
+        "confidence": 0.0,
+        "ambiguity": 1.0,
+        "signal_strength": 0.0,
+        "recommended_use": False,
+        "reason": f"{modality_name} removed by modal ablation.",
+    }
+
+
 def render_metrics_block(title: str, metrics: Optional[Dict[str, Any]]) -> List[str]:
     lines = [title]
     if metrics is None:
@@ -459,11 +471,21 @@ class ModalAblationExperiment:
         video_result: Dict[str, Any],
     ) -> Dict[str, Any]:
         working_sample = build_case_sample(sample, spec)
+        used_audio_json = audio_result["json"] if spec.use_audio else with_empty_modality("audio")
+        used_video_json = video_result["json"] if spec.use_video else with_empty_modality("video")
         try:
+            text_assessment = self.pipeline.assess_text_emotion(working_sample)
+            gate_report = self.pipeline.compute_modality_gate(
+                text_assessment=text_assessment,
+                audio_json=used_audio_json,
+                video_json=used_video_json,
+            )
             reasoner_result = self.pipeline.classify_emotion(
                 sample=working_sample,
-                audio_json=audio_result["json"] if spec.use_audio else {"audio": []},
-                video_json=video_result["json"] if spec.use_video else {"video": []},
+                text_assessment=text_assessment,
+                audio_json=used_audio_json,
+                video_json=used_video_json,
+                gate_report=gate_report,
             )
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()

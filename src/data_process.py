@@ -22,6 +22,7 @@ Standard layout per dataset:
 Supported modes:
 1. generic: convert an existing text/audio/video directory into a manifest.
 2. meld: normalize MELD into separate text/audio/video assets plus a manifest.
+3. iemocap: normalize IEMOCAP parquet shards plus a raw video archive into a manifest.
 """
 
 from __future__ import annotations
@@ -35,14 +36,15 @@ import wave
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
-import librosa
-import numpy as np
-
-
 TEXT_EXTENSIONS = {".txt", ".text"}
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".mpeg", ".mpg"}
 MELD_SPLITS = ("train", "dev", "test")
+IEMOCAP_PARQUETS = (
+    "train-00000-of-00003.parquet",
+    "train-00001-of-00003.parquet",
+    "train-00002-of-00003.parquet",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -132,9 +134,42 @@ def parse_args() -> argparse.Namespace:
         help="Only prepare the first N samples across all splits.",
     )
 
+    iemocap_parser = subparsers.add_parser(
+        "iemocap",
+        help="Prepare IEMOCAP into standardized text/audio/video assets and a JSONL manifest.",
+    )
+    iemocap_parser.add_argument(
+        "--dataset-root",
+        required=True,
+        type=Path,
+        help="IEMOCAP root folder.",
+    )
+    iemocap_parser.add_argument(
+        "--output-jsonl",
+        default=None,
+        type=Path,
+        help="Output JSONL path. Defaults to <dataset-root>/manifests/iemocap.jsonl.",
+    )
+    iemocap_parser.add_argument(
+        "--overwrite-audio",
+        action="store_true",
+        help="Rewrite wav files under media/audio/ even if they already exist.",
+    )
+    iemocap_parser.add_argument(
+        "--overwrite-text",
+        action="store_true",
+        help="Rewrite text files under prepared/text/ even if they already exist.",
+    )
+    iemocap_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Only prepare the first N samples.",
+    )
+
     args = parser.parse_args()
     if args.mode is None:
-        parser.error("Please specify a mode: generic or meld.")
+        parser.error("Please specify a mode: generic, meld, or iemocap.")
     if getattr(args, "extract_audio", False):
         args.audio_source = "extract"
     return args
@@ -280,6 +315,36 @@ def require_pyav() -> object:
     return av
 
 
+def require_librosa() -> object:
+    try:
+        import librosa  # type: ignore
+    except ImportError as exc:  # pragma: no cover - runtime dependency
+        raise ImportError(
+            "This path requires librosa. Install it with `pip install librosa`."
+        ) from exc
+    return librosa
+
+
+def require_numpy() -> object:
+    try:
+        import numpy as np  # type: ignore
+    except ImportError as exc:  # pragma: no cover - runtime dependency
+        raise ImportError(
+            "This path requires numpy. Install it with `pip install numpy`."
+        ) from exc
+    return np
+
+
+def require_pyarrow_parquet() -> object:
+    try:
+        import pyarrow.parquet as pq  # type: ignore
+    except ImportError as exc:  # pragma: no cover - runtime dependency
+        raise ImportError(
+            "This mode requires pyarrow. Install it with `pip install pyarrow`."
+        ) from exc
+    return pq
+
+
 def safe_extract_tar(archive_path: Path, target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     target_root = target_dir.resolve()
@@ -388,6 +453,8 @@ def extract_audio_to_wav(video_path: Path, audio_path: Path, overwrite: bool = F
         return
 
     av = require_pyav()
+    librosa = require_librosa()
+    np = require_numpy()
     audio_path.parent.mkdir(parents=True, exist_ok=True)
 
     container = av.open(str(video_path))
@@ -560,6 +627,228 @@ def run_meld_mode(args: argparse.Namespace) -> None:
         print(f"Warnings written to: {warning_path}")
 
 
+def iemocap_sample_id(file_name: str) -> str:
+    return f"iemocap_{Path(file_name).stem}"
+
+
+def iemocap_session_name(file_name: str) -> str:
+    stem = Path(file_name).stem
+    return stem.split("_", 1)[0] if "_" in stem else "unknown"
+
+
+def find_iemocap_parquet_files(dataset_root: Path) -> List[Path]:
+    candidates: List[Path] = []
+    for parquet_name in IEMOCAP_PARQUETS:
+        possible_paths = [
+            dataset_root / "raw" / "original" / parquet_name,
+            dataset_root / "raw" / parquet_name,
+            dataset_root / parquet_name,
+        ]
+        found = next((path.resolve() for path in possible_paths if path.exists()), None)
+        if found is None:
+            raise FileNotFoundError(
+                f"Missing IEMOCAP parquet shard '{parquet_name}'. Expected under {dataset_root / 'raw' / 'original'}."
+            )
+        candidates.append(found)
+    return candidates
+
+
+def find_iemocap_video_archive(dataset_root: Path) -> Path:
+    candidates = [
+        dataset_root / "raw" / "original" / "IEMOCAP_video_selected_classes.tar.gz",
+        dataset_root / "raw" / "IEMOCAP_video_selected_classes.tar.gz",
+        dataset_root / "IEMOCAP_video_selected_classes.tar.gz",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    raise FileNotFoundError(
+        "Missing IEMOCAP video archive. Expected one of: "
+        + ", ".join(str(path) for path in candidates)
+    )
+
+
+def ensure_iemocap_video_root(dataset_root: Path) -> Path:
+    media_root = (dataset_root / "media" / "video").resolve()
+    if media_root.exists() and any(media_root.rglob("*")):
+        if any(path.suffix.lower() in VIDEO_EXTENSIONS for path in media_root.rglob("*") if path.is_file()):
+            return media_root
+
+    unpacked_root = (dataset_root / "raw" / "unpacked" / "IEMOCAP_video_selected_classes").resolve()
+    if not (
+        unpacked_root.exists()
+        and any(path.suffix.lower() in VIDEO_EXTENSIONS for path in unpacked_root.rglob("*") if path.is_file())
+    ):
+        archive_path = find_iemocap_video_archive(dataset_root)
+        extract_tar_once(archive_path, unpacked_root)
+
+    if unpacked_root.exists() and any(
+        path.suffix.lower() in VIDEO_EXTENSIONS for path in unpacked_root.rglob("*") if path.is_file()
+    ):
+        return unpacked_root
+
+    raise FileNotFoundError(f"Failed to prepare IEMOCAP videos under {dataset_root}")
+
+
+def index_iemocap_videos(video_root: Path) -> Dict[str, Path]:
+    videos: Dict[str, Path] = {}
+    for path in sorted(video_root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+        videos[path.name.lower()] = path.resolve()
+        videos[path.stem.lower()] = path.resolve()
+    return videos
+
+
+def write_audio_bytes(audio_bytes: bytes, audio_path: Path, overwrite: bool = False) -> None:
+    if audio_path.exists() and not overwrite:
+        return
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_path.write_bytes(audio_bytes)
+
+
+def build_iemocap_records(
+    dataset_root: Path,
+    output_jsonl: Path,
+    limit: Optional[int],
+    overwrite_audio: bool,
+    overwrite_text: bool,
+) -> Tuple[List[dict], List[str]]:
+    pq = require_pyarrow_parquet()
+    parquet_files = find_iemocap_parquet_files(dataset_root)
+    video_root = ensure_iemocap_video_root(dataset_root)
+    video_index = index_iemocap_videos(video_root)
+
+    prepared_text_root = (dataset_root / "prepared" / "text").resolve()
+    prepared_audio_root = (dataset_root / "media" / "audio").resolve()
+    prepared_text_root.mkdir(parents=True, exist_ok=True)
+    prepared_audio_root.mkdir(parents=True, exist_ok=True)
+    output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+
+    records: List[dict] = []
+    warnings: List[str] = []
+    emotion_score_keys = [
+        "frustrated",
+        "angry",
+        "sad",
+        "disgust",
+        "excited",
+        "fear",
+        "neutral",
+        "surprise",
+        "happy",
+    ]
+
+    for parquet_path in parquet_files:
+        parquet_file = pq.ParquetFile(parquet_path)
+        for batch in parquet_file.iter_batches(batch_size=256):
+            for row in batch.to_pylist():
+                file_name = str(row.get("file") or "").strip()
+                if not file_name:
+                    warnings.append(f"Skipping row without audio file name in {parquet_path.name}.")
+                    continue
+
+                session_name = iemocap_session_name(file_name)
+                sample_id = iemocap_sample_id(file_name)
+                sample_text = str(row.get("transcription") or "").strip()
+                label = str(row.get("major_emotion") or "").strip()
+                video_name = str(row.get("video") or "").strip()
+                audio_entry = row.get("audio") or {}
+                audio_bytes = audio_entry.get("bytes")
+
+                if not sample_text:
+                    warnings.append(f"Skipping {sample_id}: empty transcription.")
+                    continue
+                if not isinstance(audio_bytes, (bytes, bytearray)) or not audio_bytes:
+                    warnings.append(f"Skipping {sample_id}: missing embedded wav bytes.")
+                    continue
+                if not video_name:
+                    warnings.append(f"Skipping {sample_id}: missing video filename.")
+                    continue
+
+                video_lookup_key = video_name.lower()
+                video_path = video_index.get(video_lookup_key) or video_index.get(Path(video_name).stem.lower())
+                if video_path is None:
+                    warnings.append(f"Missing video for {sample_id}: expected {video_name} under {video_root}")
+                    continue
+
+                session_text_dir = prepared_text_root / session_name
+                session_audio_dir = prepared_audio_root / session_name
+                session_text_dir.mkdir(parents=True, exist_ok=True)
+                session_audio_dir.mkdir(parents=True, exist_ok=True)
+
+                text_path = (session_text_dir / f"{sample_id}.txt").resolve()
+                if overwrite_text or not text_path.exists():
+                    text_path.write_text(sample_text + "\n", encoding="utf-8")
+
+                audio_path = (session_audio_dir / f"{sample_id}.wav").resolve()
+                write_audio_bytes(bytes(audio_bytes), audio_path, overwrite=overwrite_audio)
+
+                emotion_scores = {
+                    key: float(row[key]) if row.get(key) is not None else None
+                    for key in emotion_score_keys
+                }
+
+                records.append(
+                    {
+                        "id": sample_id,
+                        "text": sample_text,
+                        "audio_path": str(audio_path),
+                        "video_path": str(video_path),
+                        "label": label,
+                        "meta": {
+                            "dataset": "IEMOCAP",
+                            "session": session_name,
+                            "gender": row.get("gender", ""),
+                            "source_audio_file": file_name,
+                            "source_video_file": video_name,
+                            "text_path": str(text_path),
+                            "emotion_scores": emotion_scores,
+                            "emo_act": row.get("EmoAct"),
+                            "emo_val": row.get("EmoVal"),
+                            "emo_dom": row.get("EmoDom"),
+                            "speaking_rate": row.get("speaking_rate"),
+                            "pitch_mean": row.get("pitch_mean"),
+                            "pitch_std": row.get("pitch_std"),
+                            "rms": row.get("rms"),
+                            "relative_db": row.get("relative_db"),
+                        },
+                    }
+                )
+
+                if limit is not None and len(records) >= limit:
+                    return records, warnings
+
+    return records, warnings
+
+
+def resolve_iemocap_output_path(args: argparse.Namespace, dataset_root: Path) -> Path:
+    if args.output_jsonl is not None:
+        return args.output_jsonl.resolve()
+    return (dataset_root / "manifests" / "iemocap.jsonl").resolve()
+
+
+def run_iemocap_mode(args: argparse.Namespace) -> None:
+    dataset_root = args.dataset_root.resolve()
+    output_jsonl = resolve_iemocap_output_path(args, dataset_root)
+
+    records, warnings = build_iemocap_records(
+        dataset_root=dataset_root,
+        output_jsonl=output_jsonl,
+        limit=args.limit,
+        overwrite_audio=args.overwrite_audio,
+        overwrite_text=args.overwrite_text,
+    )
+    write_jsonl(records, output_jsonl)
+    warning_path = warning_path_for_output(output_jsonl)
+    write_warnings(warnings, warning_path)
+
+    print(f"IEMOCAP manifest written to: {output_jsonl}")
+    print(f"Prepared IEMOCAP samples: {len(records)}")
+    if warnings:
+        print(f"Warnings written to: {warning_path}")
+
+
 def main() -> None:
     args = parse_args()
     if args.mode == "generic":
@@ -567,6 +856,9 @@ def main() -> None:
         return
     if args.mode == "meld":
         run_meld_mode(args)
+        return
+    if args.mode == "iemocap":
+        run_iemocap_mode(args)
         return
     raise ValueError(f"Unsupported mode: {args.mode}")
 

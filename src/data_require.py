@@ -38,6 +38,11 @@ from typing import Dict, Iterable, List, Optional
 
 CHUNK_SIZE = 1024 * 1024
 MELD_SPLITS = ("train", "dev", "test")
+IEMOCAP_PARQUETS = (
+    "train-00000-of-00003.parquet",
+    "train-00001-of-00003.parquet",
+    "train-00002-of-00003.parquet",
+)
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,33 @@ DATASET_REGISTRY: Dict[str, DatasetSpec] = {
                 description="MELD raw video archive",
                 extract=True,
                 nested_split_extract=True,
+            ),
+        ],
+    ),
+    "iemocap": DatasetSpec(
+        key="iemocap",
+        storage_dir="IEMOCAP",
+        display_name="IEMOCAP",
+        description="Interactive Emotional Dyadic Motion Capture dataset mirrored as parquet audio/text labels plus a raw video archive.",
+        homepage="https://sail.usc.edu/iemocap/",
+        downloads=[
+            *[
+                DownloadItem(
+                    relative_path=f"raw/original/{parquet_name}",
+                    urls=[
+                        f"https://huggingface.co/datasets/WiktorJakubowski/iemocap-with-videos/resolve/main/data/{parquet_name}",
+                    ],
+                    description=f"IEMOCAP parquet shard {parquet_name}",
+                )
+                for parquet_name in IEMOCAP_PARQUETS
+            ],
+            DownloadItem(
+                relative_path="raw/original/IEMOCAP_video_selected_classes.tar.gz",
+                urls=[
+                    "https://huggingface.co/datasets/tarasabkar/IEMOCAP_videos/resolve/main/IEMOCAP_videos",
+                ],
+                description="IEMOCAP raw video archive",
+                extract=True,
             ),
         ],
     ),
